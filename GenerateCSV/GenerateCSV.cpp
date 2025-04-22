@@ -93,7 +93,8 @@ std::string classify_and_format(const fs::path& baseDir, const fs::path& filePat
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     //in map CSV mode keep full rel path+ext for .gsc under maps folder
-    if (g_mapCsvMode && depth >= 1 && rel.rfind("maps/", 0) == 0 && ext == "gsc") {
+    if (g_mapCsvMode && depth >= 1 &&
+        (rel.rfind("maps/", 0) == 0 || rel.rfind("common_scripts/", 0) == 0) && ext == "gsc") {
         return "rawfile," + rel;
     }
 

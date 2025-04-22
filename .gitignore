@@ -31,3 +31,4 @@
 *.out
 *.app
 /GenerateCSV/x64
+/.vs

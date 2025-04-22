@@ -13,6 +13,8 @@
 
 namespace fs = std::filesystem;
 
+static bool g_mapCsvMode = false;
+
 // Classification rule for mapping folder + extension to a type
 struct Rule {
     std::string folder;
@@ -63,19 +65,39 @@ static bool should_skip_file(const fs::path& file)
     return file.extension() == ".d3dbsp";
 }
 
+static bool is_valid_map_file(const fs::path& file)
+{
+    std::string ext = file.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+
+    if (ext == ".gsc" || ext == ".fxe" || ext == ".xmb" || ext == ".xsb") {
+        return true;
+    }
+    if (ext == ".json" && file.parent_path().filename() == "sounds") {
+        return true;
+    }
+    return false;
+}
+
 std::string classify_and_format(const fs::path& baseDir, const fs::path& filePath)
 {
     fs::path relPath = fs::relative(filePath, baseDir);
     std::string rel = relPath.generic_string();
     size_t depth = std::count(rel.begin(), rel.end(), '/');
 
+    // derive stem and ext
     std::string stem = filePath.stem().generic_string();
     std::string ext = filePath.extension().generic_string();
     if (!ext.empty() && ext[0] == '.') ext.erase(0, 1);
     std::transform(ext.begin(), ext.end(), ext.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-    // Files in root directory
+    //in map CSV mode keep full rel path+ext for .gsc under maps folder
+    if (g_mapCsvMode && depth >= 1 && rel.rfind("maps/", 0) == 0 && ext == "gsc") {
+        return "rawfile," + rel;
+    }
+
+    // root files
     if (depth == 0) {
         std::string type;
         if (ext == "csv")                type = "stringtable";
@@ -149,15 +171,42 @@ int main()
             return 1;
         }
 
-        // List subdirectories
+        int csvType = 0;
+        while (true) {
+            SetConsoleTextAttribute(hConsole, infoColor);
+            std::cout << "Select CSV Type:\n";
+            SetConsoleTextAttribute(hConsole, defaultColor);
+            std::cout << "  [1] Map CSV\n";
+            std::cout << "  [2] Normal CSV\n";
+            SetConsoleTextAttribute(hConsole, promptColor);
+            std::cout << "Enter number: ";
+            SetConsoleTextAttribute(hConsole, defaultColor);
+            if ((std::cin >> csvType) && (csvType == 1 || csvType == 2))
+                break;
+            std::cin.clear();
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        }
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+        // set global flag for map CSV
+        g_mapCsvMode = (csvType == 1);
+
         std::vector<fs::path> dirs;
-        for (auto& entry : fs::directory_iterator(cwd))
-            if (fs::is_directory(entry))
-                dirs.push_back(entry.path());
+        for (auto& entry : fs::directory_iterator(cwd)) {
+            if (fs::is_directory(entry)) {
+                std::string name = entry.path().filename().string();
+                if (csvType == 1 && name.rfind("mp_", 0) == 0) {
+                    dirs.push_back(entry.path());
+                }
+                else if (csvType == 2) {
+                    dirs.push_back(entry.path());
+                }
+            }
+        }
 
         if (dirs.empty()) {
             SetConsoleTextAttribute(hConsole, errorColor);
-            std::cerr << "No subdirectories in 'zonetool'.\n";
+            std::cerr << "No matching subdirectories in 'zonetool'.\n";
             SetConsoleTextAttribute(hConsole, promptColor);
             std::cout << "Press Enter to exit...";
             SetConsoleTextAttribute(hConsole, defaultColor);
@@ -186,10 +235,34 @@ int main()
 
         // Gather files
         fs::path selected = dirs[choice - 1];
+        bool skipTechsets = false;
+        if (fs::exists(selected / "techsets")) {
+            SetConsoleTextAttribute(hConsole, promptColor);
+            std::cout << "Skip 'techsets' folder? (Y/N): ";
+            SetConsoleTextAttribute(hConsole, defaultColor);
+            char skip;
+            std::cin >> skip;
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            if (skip == 'Y' || skip == 'y') {
+                skipTechsets = true;
+            }
+        }
+
         std::vector<fs::path> files;
-        for (auto& p : fs::recursive_directory_iterator(selected))
-            if (fs::is_regular_file(p))
+        for (auto& p : fs::recursive_directory_iterator(selected)) {
+            if (fs::is_regular_file(p)) {
+                if (skipTechsets) {
+                    fs::path relative = fs::relative(p.path(), selected);
+                    for (auto& part : relative) {
+                        if (part == "techsets") {
+                            goto skip_this_file;
+                        }
+                    }
+                }
                 files.push_back(p.path());
+            skip_this_file:;
+            }
+        }
 
         files.erase(
             std::remove_if(files.begin(), files.end(), should_skip_file),
@@ -197,6 +270,15 @@ int main()
         );
 
         // Open CSV
+        if (csvType == 1) {
+            files.erase(
+                std::remove_if(files.begin(), files.end(), [](const fs::path& file) {
+                    return !is_valid_map_file(file);
+                    }),
+                files.end()
+            );
+        }
+
         std::string csvName = selected.filename().string() + ".csv";
         std::ofstream out(csvName);
         if (!out.is_open()) {
